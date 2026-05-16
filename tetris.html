@@ -108,6 +108,7 @@
       <div><kbd>↑</kbd> 回転</div>
       <div><kbd>Space</kbd> ハードドロップ</div>
       <div><kbd>P</kbd> ポーズ</div>
+      <div><kbd>M</kbd> ミュート <span id="muteState">OFF</span></div>
       <div><kbd>R</kbd> リスタート</div>
     </div>
   </div>
@@ -150,6 +151,55 @@ const SHAPES = {
 const KEYS = Object.keys(SHAPES);
 
 let grid, current, nextPiece, score, lines, level, dropCounter, dropInterval, lastTime, paused, gameOver;
+
+const sfx = {
+  ctx: null,
+  muted: false,
+  ensure() {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) this.ctx = new AC();
+    }
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+  },
+  tone({freq = 440, type = 'square', dur = 0.08, gain = 0.08, slide = 0, delay = 0}) {
+    if (this.muted || !this.ctx) return;
+    const t0 = this.ctx.currentTime + delay;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    if (slide) osc.frequency.exponentialRampToValueAtTime(Math.max(20, freq + slide), t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(gain, t0 + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g).connect(this.ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  },
+  move()    { this.tone({freq: 220, type: 'square', dur: 0.04, gain: 0.04}); },
+  rotate()  { this.tone({freq: 440, type: 'triangle', dur: 0.06, gain: 0.05}); },
+  lock()    { this.tone({freq: 160, type: 'sawtooth', dur: 0.08, gain: 0.06, slide: -60}); },
+  hardDrop(){ this.tone({freq: 300, type: 'sawtooth', dur: 0.12, gain: 0.07, slide: -240}); },
+  lineClear(n) {
+    const base = [330, 440, 554, 740];
+    for (let i = 0; i < Math.min(n, 4); i++) {
+      this.tone({freq: base[i], type: 'square', dur: 0.1, gain: 0.07, delay: i * 0.06});
+    }
+  },
+  levelUp() {
+    [523, 659, 784, 1047].forEach((f, i) =>
+      this.tone({freq: f, type: 'triangle', dur: 0.1, gain: 0.07, delay: i * 0.07}));
+  },
+  gameOver() {
+    [440, 349, 277, 220].forEach((f, i) =>
+      this.tone({freq: f, type: 'sawtooth', dur: 0.2, gain: 0.08, delay: i * 0.15}));
+  },
+  toggle() {
+    this.muted = !this.muted;
+    document.getElementById('muteState').textContent = this.muted ? 'ON' : 'OFF';
+  },
+};
 
 function createGrid() {
   return Array.from({length: ROWS}, () => Array(COLS).fill(null));
@@ -218,9 +268,12 @@ function clearLines() {
     const points = [0, 100, 300, 500, 800];
     score += points[cleared] * level;
     lines += cleared;
+    const prevLevel = level;
     level = Math.floor(lines / 10) + 1;
     dropInterval = Math.max(80, 1000 - (level - 1) * 80);
     updateHud();
+    sfx.lineClear(cleared);
+    if (level > prevLevel) sfx.levelUp();
   }
 }
 
@@ -236,6 +289,7 @@ function spawn() {
   drawNext();
   if (collide(current)) {
     gameOver = true;
+    sfx.gameOver();
     showOverlay('GAME OVER\n(Rでリスタート)');
   }
 }
@@ -244,6 +298,7 @@ function drop() {
   if (!collide(current, 0, 1)) {
     current.y++;
   } else {
+    sfx.lock();
     merge(current);
     clearLines();
     spawn();
@@ -256,6 +311,7 @@ function hardDrop() {
     current.y++;
     score += 2;
   }
+  sfx.hardDrop();
   merge(current);
   clearLines();
   spawn();
@@ -263,7 +319,10 @@ function hardDrop() {
 }
 
 function move(dir) {
-  if (!collide(current, dir, 0)) current.x += dir;
+  if (!collide(current, dir, 0)) {
+    current.x += dir;
+    sfx.move();
+  }
 }
 
 function tryRotate() {
@@ -273,6 +332,7 @@ function tryRotate() {
     if (!collide(current, k, 0, rotated)) {
       current.shape = rotated;
       current.x += k;
+      sfx.rotate();
       return;
     }
   }
@@ -401,6 +461,11 @@ function reset() {
 }
 
 document.addEventListener('keydown', e => {
+  sfx.ensure();
+  if (e.key === 'm' || e.key === 'M') {
+    sfx.toggle();
+    return;
+  }
   if (e.key === 'r' || e.key === 'R') {
     reset();
     return;
